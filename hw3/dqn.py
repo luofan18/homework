@@ -2,11 +2,15 @@ import sys
 import gym.spaces
 import itertools
 import numpy as np
+import cv2
 import random
+import os
 import tensorflow                as tf
 import tensorflow.contrib.layers as layers
 from collections import namedtuple
 from dqn_utils import *
+from scipy import misc
+
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
@@ -80,30 +84,38 @@ def learn(env,
     ###############
     # BUILD MODEL #
     ###############
+    
+    down_sample = 1
+    mode = 'train'
+    model_name = 'basic'
 
     if len(env.observation_space.shape) == 1:
         # This means we are running on low-dimensional observations (e.g. RAM)
         input_shape = env.observation_space.shape
+        input_shape = input_shape
+        down_sample = 1
+        use_ram = True
     else:
         img_h, img_w, img_c = env.observation_space.shape
-        input_shape = (img_h, img_w, frame_history_len * img_c)
+        input_shape = (img_h * down_sample, img_w * down_sample, frame_history_len * img_c)
+        use_ram = False
     num_actions = env.action_space.n
 
     # set up placeholders
     # placeholder for current observation (or state)
-    obs_t_ph              = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    obs_t_ph              = tf.placeholder(tf.uint8, [None] + list(input_shape), name='obs_t_ph')
     # placeholder for current action
-    act_t_ph              = tf.placeholder(tf.int32,   [None])
+    act_t_ph              = tf.placeholder(tf.int32,   [None], name='act_t_ph')
     # placeholder for current reward
-    rew_t_ph              = tf.placeholder(tf.float32, [None])
+    rew_t_ph              = tf.placeholder(tf.float32, [None], name='rew_t_ph')
     # placeholder for next observation (or state)
-    obs_tp1_ph            = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    obs_tp1_ph            = tf.placeholder(tf.uint8, [None] + list(input_shape), name='obs_tp1_ph')
     # placeholder for end of episode mask
     # this value is 1 if the next state corresponds to the end of an episode,
     # in which case there is no Q-value at the next state; at the end of an
     # episode, only the current state reward contributes to the target, not the
     # next state Q-value (i.e. target is just rew_t_ph, not rew_t_ph + gamma * q_tp1)
-    done_mask_ph          = tf.placeholder(tf.float32, [None])
+    done_mask_ph          = tf.placeholder(tf.float32, [None], name='done_mask_ph')
 
     # casting to float on GPU ensures lower data transfer times.
     obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
@@ -128,7 +140,40 @@ def learn(env,
     ######
     
     # YOUR CODE HERE
-
+    # build the network
+    q_func_learn = q_func(obs_t_float, num_actions, scope='q_func')
+    q_func_action = q_func(obs_tp1_float, num_actions, scope='q_func', reuse=True)
+    q_func_target = q_func(obs_tp1_float, num_actions, scope='q_func_target')
+    # obtain variables
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func_target')
+    # predict actions
+    a_predict = tf.argmax(q_func_learn, 1)
+    def predict_action(state):
+        return session.run(a_predict, feed_dict={obs_t_float: state})[0]
+    # define the error
+    ### label the data, use double q-learning
+    # find the max action
+    with tf.name_scope('one_step_forward_best_action'):
+        next_a = tf.argmax(tf.stop_gradient(q_func_action), 1)
+        a_mask = tf.one_hot(next_a, num_actions)
+    # get the q value
+    with tf.name_scope('target_q'):
+        next_q = tf.identity(q_func_target)
+        target_q = tf.reduce_sum(a_mask * next_q, 1) * (1 - done_mask_ph) * gamma + rew_t_ph
+        target_q = tf.stop_gradient(target_q)
+    #tf.Assert(tf.not_equal(tf.shape(target_q), tf.constant(num_actions)), tf.constant('reduce wrong dim'))
+    #num_action_tf = tf.constant(num_actions)
+    #reduce_error = tf.constant('reduce wrong dim')
+    #tf.Assert(tf.not_equal(tf.shape(target_q), tf.constant(num_actions)), tf.constant('reduce wrong dim'))
+    ###
+    # calculate the q that should be update
+    with tf.name_scope('this_q'):
+        this_q = q_func_learn * tf.one_hot(act_t_ph, num_actions)
+        this_q = tf.reduce_sum(this_q, 1)
+    # calculate the huber loss, but first just use standard mean square error
+    with tf.name_scope('square_loss'):
+        total_error = tf.square(target_q - this_q)
     ######
 
     # construct optimization op (with gradient clipping)
@@ -146,6 +191,8 @@ def learn(env,
 
     # construct the replay buffer
     replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
+    
+    tf.summary.FileWriter('log/train/graph', session.graph)
 
     ###############
     # RUN ENV     #
@@ -195,7 +242,32 @@ def learn(env,
         #####
         
         # YOUR CODE HERE
-
+        #last_obs = cv2.cvtColor(last_obs, cv2.COLOR_RGB2GRAY)
+        if not use_ram:
+            last_obs = cv2.resize(last_obs, None, fx=down_sample, fy=down_sample)
+            assert last_obs.shape == (input_shape[0], input_shape[1])
+            last_idx = replay_buffer.store_frame(last_obs[:,:,None])
+        elif use_ram:
+            last_idx = replay_buffer.store_frame(last_obs)
+        if model_initialized:
+            last_state = replay_buffer.encode_recent_observation()
+        if not model_initialized:
+            # random choose an action
+            action = random.randint(0, num_actions - 1)
+        else:
+            ### episilon greedy explora
+            if random.random() < exploration.value(t):
+                action = random.randint(0, num_actions - 1)
+            else:
+                # compute the action
+                # session.run
+                last_state = last_state[None,:]
+                action = predict_action(last_state)
+            
+        last_obs, r, done, _ = env.step(action)
+        replay_buffer.store_effect(last_idx, action, r, done)
+        if done:
+            last_obs = env.reset()
         #####
 
         # at this point, the environment should have been advanced one step (and
@@ -245,7 +317,28 @@ def learn(env,
             #####
             
             # YOUR CODE HERE
+            ### 3.a sample memory
+            this_s, this_a, this_r, next_s, this_done = replay_buffer.sample(batch_size)
+            ### 3.b initialize variable
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                        obs_t_ph: this_s, obs_tp1_ph: next_s})
+                session.run(update_target_fn)
+                model_initialized = True
 
+            ### 3.c train the model
+            error_his, _ = session.run([total_error, train_fn], feed_dict={
+                    obs_t_ph: this_s, act_t_ph: this_a, rew_t_ph: this_r, 
+                    obs_tp1_ph: next_s, done_mask_ph: this_done, 
+                    learning_rate: optimizer_spec.lr_schedule.value(t)})
+            ### 4.c update target network
+            if t % target_update_freq == 0:
+                session.run(update_target_fn)
+                
+            """    
+            tf.summary.FileWriter('log/train', session.graph)
+            break
+            """
             #####
 
         ### 4. Log progress
@@ -262,3 +355,8 @@ def learn(env,
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
             sys.stdout.flush()
+
+    ### save model
+    saver = tf.train.Saver()
+    save_path = saver.save(session, os.path.join('model', model_name))
+    print ('Model saved in {}'.format(save_path))
