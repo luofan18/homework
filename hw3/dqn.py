@@ -203,6 +203,36 @@ def learn(env,
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
+    
+    class History(object):
+        
+        import numpy as np
+    
+        def __init__(self):
+            
+            self.step = []
+            self.reward = []
+    
+        def append(self, step, reward):
+            self.step.append(step)
+            self.reward.append(reward)
+    
+        def get_step(self):
+            return self.step
+    
+        def get_reward(self):
+            return self.reward
+    
+        def save(self, path):
+            data = self.np.array([self.step, self.reward])
+            self.np.save(path, data)
+    
+        def read(self, path):
+            data = self.np.load(path + '.npy')
+            self.step = list(data[0])
+            self.reward = list(data[1])
+        
+    history = History()
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -348,6 +378,8 @@ def learn(env,
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
         if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
+            history.append(t, mean_episode_reward)
+            history.save('history')
             print("Timestep %d" % (t,))
             print("mean reward (100 episodes) %f" % mean_episode_reward)
             print("best mean reward %f" % best_mean_episode_reward)

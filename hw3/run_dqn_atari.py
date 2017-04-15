@@ -11,6 +11,13 @@ import dqn
 from dqn_utils import *
 from atari_wrappers import *
 
+def record_video(episoder):
+    
+    if episoder >= 1140 and episoder <= 1200:
+        if episoder % 5 == 0:
+            return True
+    
+    return False
 
 def atari_model(img_in, num_actions, scope, reuse=False):
     # as described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
@@ -111,7 +118,8 @@ def get_env(task, seed):
     env.seed(seed)
 
     expt_dir = '/tmp/hw3_vid_dir2/'
-    env = wrappers.Monitor(env, osp.join(expt_dir, "gym"), force=True)
+    env = wrappers.Monitor(env, osp.join(expt_dir, "gym"), 
+                           video_callable=record_video, force=True)
     env = wrap_deepmind(env)
 
     return env
