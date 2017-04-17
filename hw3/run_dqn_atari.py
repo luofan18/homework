@@ -119,7 +119,7 @@ def get_env(task, seed):
 
     expt_dir = '/tmp/hw3_vid_dir2/'
     env = wrappers.Monitor(env, osp.join(expt_dir, "gym"), 
-                           video_callable=record_video, force=True)
+                           video_callable=None, force=True)
     env = wrap_deepmind(env)
 
     return env
