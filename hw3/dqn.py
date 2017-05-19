@@ -172,8 +172,12 @@ def learn(env,
         this_q = q_func_learn * tf.one_hot(act_t_ph, num_actions)
         this_q = tf.reduce_sum(this_q, 1)
     # calculate the huber loss, but first just use standard mean square error
+    '''
     with tf.name_scope('square_loss'):
         total_error = tf.square(target_q - this_q)
+    '''
+    with tf.name_scope('huber_loss'):
+        total_error = huber_loss(target_q - this_q)
     ######
 
     # construct optimization op (with gradient clipping)
